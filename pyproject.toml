@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agriculture-commodity-forecasting"
+version = "0.1.0"
+description = "Multi-modal ML/DL framework for agricultural commodity price forecasting"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Sakesh-A" }
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "torch>=2.1.0",
+    "pytorch-lightning>=2.1.0",
+    "pytorch-forecasting>=1.0.0",
+    "lightgbm>=4.1.0",
+    "xgboost>=2.0.0",
+    "yfinance>=0.2.35",
+    "fredapi>=0.5.1",
+    "xarray>=2023.1.0",
+    "netcdf4>=1.6.5",
+    "pandas>=2.1.0",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+    "scikit-learn>=1.3.0",
+    "optuna>=3.4.0",
+    "pydantic>=2.5.0",
+    "pyyaml>=6.0.1",
+    "requests>=2.31.0",
+    "tqdm>=4.66.0",
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+    "plotly>=5.18.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.9",
+    "mypy>=1.7.0",
+    "black>=23.12.0",
+    "pre-commit>=3.6.0",
+    "jupyter>=1.0.0",
+    "ipykernel>=6.28.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra -q --strict-markers"
