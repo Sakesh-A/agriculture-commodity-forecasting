@@ -52,7 +52,39 @@ The shape of the futures forward curve serves as a primary feature, reflecting s
 
 ## 2. Problem Formulation & Mathematical Objectives
 
-_Define the forecasting formulation (e.g., target definitions, forecast horizons, loss functions, and probabilistic formulations)._
+### 2.1 Stationarity & Time-Series Regularity
+Raw commodity prices $P_t$ violate weak-form stationarity due to time-varying means $\mathbb{E}[P_t]$ and explosive variances $\text{Var}(P_t) = t\sigma^2$. To ensure consistent generalization across distinct market regimes, all price series undergo logarithmic differentiation.
+
+#### Stationarity Validation Protocol
+Every candidate input series $X_t$ must pass a dual hypothesis verification:
+1. **Augmented Dickey-Fuller (ADF) Test:** Reject null hypothesis of unit root ($p < 0.05$).
+2. **Kwiatkowski-Phillips-Schmidt-Shin (KPSS) Test:** Fail to reject null hypothesis of stationarity ($p > 0.05$).
+
+Series failing ADF testing are differenced of order $d=1$:
+$$\Delta X_t = X_t - X_{t-1}$$
+
+### 2.2 Prediction Targets & Forecast Horizons
+Let $\widetilde{P}_t$ denote the Panama-adjusted continuous front-month price. The framework models multi-horizon forward log returns across three operationally distinct horizons:
+- **Daily Horizon:** $h = 1$ trading day (Immediate liquidity & news reaction)
+- **Weekly Horizon:** $h = 5$ trading days (Weekly USDA Crop Progress cycle)
+- **Monthly Horizon:** $h = 20$ trading days (Monthly WASDE balance sheet re-estimation)
+
+#### Forward Log-Return Target
+$$r_{t, h} = \ln\left(\frac{\widetilde{P}_{t+h}}{\widetilde{P}_t}\right) = \ln(\widetilde{P}_{t+h}) - \ln(\widetilde{P}_t)$$
+
+#### Forward Realized Volatility Target
+$$\sigma_{t, h} = \sqrt{\frac{252}{h} \sum_{i=1}^h r_{t+i, 1}^2}$$
+
+### 2.3 Probabilistic Objective & Quantile Pinball Loss
+Agricultural return distributions exhibit pronounced non-Gaussian fat tails and skewness. Models optimize conditional quantiles $\mathcal{Q} = \{0.10, 0.50, 0.90\}$ rather than conditional means.
+
+#### Pinball Loss Formulation
+For target $y$ and quantile prediction $\hat{y}_q$ at quantile $q \in (0, 1)$:
+$$\mathcal{L}_q(y, \hat{y}_q) = \max\left( q (y - \hat{y}_q), (1 - q)(\hat{y}_q - y) \right)$$
+
+#### Multi-Horizon Joint Objective
+$$\mathcal{L}_{\text{total}} = \frac{1}{|\mathcal{Q}| \cdot |\mathcal{H}|} \sum_{q \in \mathcal{Q}} \sum_{h \in \mathcal{H}} \mathcal{L}_q\left(r_{t, h}, \hat{r}_{t, h}^{(q)}\right)$$
+where $\mathcal{H} = \{1, 5, 20\}$ and $\mathcal{Q} = \{0.10, 0.50, 0.90\}$.
 
 ---
 
