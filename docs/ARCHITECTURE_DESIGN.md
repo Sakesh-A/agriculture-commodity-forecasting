@@ -286,7 +286,64 @@ $$\mathbf{s}_t = \text{Softmax}\left(\mathbf{W}\mathbf{e}_t + \mathbf{b}\right) 
 
 ## 5. Model Architectures
 
-_Document model topologies, baselines, deep learning architectures, and ensemble strategies._
+The framework evaluates a progression of models ranging from classical econometric benchmarks to multi-horizon deep sequence transformers, culminating in multi-modal cross-attention fusion.
+
+---
+
+### 5.1 Baseline Suite: Econometric & Tabular Ensembles
+
+#### 1. ARMA-GARCH Econometric Benchmark
+To establish benchmark volatility forecasting and test for conditional heteroskedasticity:
+- **Conditional Mean (ARMA):**
+  $$r_t = \mu + \sum_{i=1}^p \phi_i r_{t-i} + \sum_{j=1}^q \theta_j \epsilon_{t-j} + \epsilon_t$$
+- **Conditional Volatility (GARCH(1,1)):**
+  $$\sigma_t^2 = \omega + \alpha \epsilon_{t-1}^2 + \beta \sigma_{t-1}^2$$
+  Serves as the analytical yardstick for forward realized volatility $\sigma_{t, h}$.
+
+#### 2. Multi-Quantile LightGBM
+Gradient boosted decision trees trained on engineered tabular lags:
+- Separate models trained for each horizon $h \in \{1, 5, 20\}$ and quantile $q \in \{0.10, 0.50, 0.90\}$.
+- Objective: Piecewise linear Pinball Loss.
+- Hyperparameters optimized via Bayesian search: `max_depth`, `learning_rate`, `num_leaves`, `colsample_bytree`, `subsample`.
+
+---
+
+### 5.2 Deep Sequence Modeling: Temporal Fusion Transformer (TFT)
+
+The primary deep learning architecture is the Temporal Fusion Transformer (Lim et al., 2021), designed specifically for heterogeneous multi-horizon time-series forecasting.
+
+#### 1. Input Variable Typology
+TFT decomposes the feature space into three strictly isolated functional categories:
+1. **Static Metadata ($\mathbf{s}$):** Invariant entity descriptors (e.g., commodity identifier `ZC` vs. `ZS`, exchange code).
+2. **Observed Past Inputs ($\mathbf{x}_t$):** Dynamic time-series known only up to time $t$ (e.g., past returns, realized volatility, GDD anomalies, COT positioning, WASDE balance sheet deltas).
+3. **Known Future Inputs ($\mathbf{z}_{t+k}$):** Deterministic signals known across both past and forecast horizons (e.g., harmonic calendar embeddings $x_{\sin}, x_{\cos}$, day of week, scheduled USDA report release dates).
+
+#### 2. Variable Selection Networks (VSN)
+Financial time series suffer from low signal-to-noise ratios. VSN applies instance-level feature gating:
+$$\mathbf{v}_t = \text{Softmax}\left(\text{GRN}_{v}(\mathbf{\xi}_t)\right)$$
+$$\widetilde{\mathbf{\xi}}_t = \sum_{j=1}^{M} v_{t, j} \cdot \text{GRN}_{\xi}^{(j)}(\mathbf{\xi}_{t, j})$$
+where $v_{t, j}$ represents the dynamically learned importance weight of feature $j$ at timestamp $t$.
+
+#### 3. Temporal Self-Attention & Sequence Layers
+- **Local Context:** A bidirectional LSTM encoder/decoder processes the selected features to inject inductive bias for sequential locality.
+- **Long-Range Dependencies:** Multi-head interpretable attention attends across past lookback windows:
+  $$\mathbf{A} = \text{Softmax}\left(\frac{\mathbf{Q} \mathbf{K}^\top}{\sqrt{d_k}}\right)$$
+  Attention weights are shared across heads, producing an interpretable scalar temporal attribution score for each lookback step.
+
+#### 4. Multi-Horizon Quantile Prediction Head
+The decoder outputs simultaneous forward return predictions across horizons $\mathcal{H} = \{1, 5, 20\}$ and quantiles $\mathcal{Q} = \{0.10, 0.50, 0.90\}$ in a single forward pass:
+$$\hat{\mathbf{y}}_{t, h} = \mathbf{W}_q \cdot \text{GRN}_{\text{out}}(\mathbf{\psi}_{t+h}) + \mathbf{b}_q$$
+optimized via the joint multi-quantile loss $\mathcal{L}_{\text{total}}$ defined in Section 2.3.
+
+---
+
+### 5.3 Multi-Modal Cross-Attention Extension
+
+To incorporate unstructured news and gridded weather rasters into the TFT backbone:
+1. **Text Stream:** FinBERT embeddings $\mathbf{e}_t^{\text{text}} \in \mathbb{R}^{768}$ pass through a dimension-matching linear projection: $\mathbf{u}_t^{\text{text}} = \mathbf{W}_t \mathbf{e}_t^{\text{text}} \in \mathbb{R}^{d_{\text{model}}}$.
+2. **Spatial Weather Stream:** 2D CNN spatial embedding $\mathbf{z}_t^{\text{spatial}} \in \mathbb{R}^{d_{\text{weather}}}$ projected to $\mathbb{R}^{d_{\text{model}}}$.
+3. **Cross-Attention Bottleneck:** An auxiliary cross-attention layer attends between the temporal sequence states and the multi-modal embeddings prior to the final quantile decoding head:
+   $$\text{CrossAttn}(\mathbf{H}_{\text{time}}, \mathbf{H}_{\text{modal}}) = \text{Softmax}\left(\frac{\mathbf{Q}_{\text{time}} \mathbf{K}_{\text{modal}}^\top}{\sqrt{d}}\right) \mathbf{V}_{\text{modal}}$$
 
 ---
 
