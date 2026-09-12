@@ -86,45 +86,47 @@ $$\mathcal{L}_q(y, \hat{y}_q) = \max\left( q (y - \hat{y}_q), (1 - q)(\hat{y}_q 
 $$\mathcal{L}_{\text{total}} = \frac{1}{|\mathcal{Q}| \cdot |\mathcal{H}|} \sum_{q \in \mathcal{Q}} \sum_{h \in \mathcal{H}} \mathcal{L}_q\left(r_{t, h}, \hat{r}_{t, h}^{(q)}\right)$$
 where $\mathcal{H} = \{1, 5, 20\}$ and $\mathcal{Q} = \{0.10, 0.50, 0.90\}$.
 
+### 2.4 Monotonic Quantile Parameterization (No Crossing)
+To eliminate invalid quantile crossings ($\hat{y}_{0.10} > \hat{y}_{0.50}$ or $\hat{y}_{0.50} > \hat{y}_{0.90}$), output layers enforce non-negative step increments:
+$$\hat{y}_{0.10} = \mathbf{w}_1^\top \mathbf{h}_t + b_1$$
+$$\hat{y}_{0.50} = \hat{y}_{0.10} + \text{Softplus}(\mathbf{w}_2^\top \mathbf{h}_t + b_2)$$
+$$\hat{y}_{0.90} = \hat{y}_{0.50} + \text{Softplus}(\mathbf{w}_3^\top \mathbf{h}_t + b_3)$$
+
 ---
 
 ## 3. Data Ingestion & Alignment Pipeline
 
 The forecasting pipeline ingests multi-frequency, asynchronous data sources into a unified daily trading decision grid indexed at market close ($t$). To prevent lookahead bias and feature leakage, all ingestion modules enforce point-in-time (PIT) publication timestamps rather than observation period dates.
 
-```
-+-----------------------------------------------------------------------------+
-|                         RAW ASYNCHRONOUS INGESTION                          |
-|                                                                             |
-|  [Daily Market]           [Macro & Energy]        [Weekly Crop Progress]    |
-|  CBOT (ZC, ZS, ZW)        FRED (WTI, DXY, TNX)    USDA QuickStats           |
-|  Close: 1:20 PM CT        Close: 4:00 PM ET       Mon 3:00 PM CT (Post-mkt) |
-|         │                        │                        │                 |
-|         │                        │                        │                 |
-|  [Monthly WASDE]          [Weather Observables]   [Text / News Feeds]       |
-|  USDA Balance Sheets      Open-Meteo / NOAA GFS   WASDE Summaries / News    |
-|  12:00 PM ET Midday       End-of-day Grids        Asynchronous Streams      |
-+---------┬────────────────────────┼────────────────────────┬-----------------+
-          │                        │                        │
-          ▼                        ▼                        ▼
-+-----------------------------------------------------------------------------+
-|                      POINT-IN-TIME ALIGNMENT ENGINE                         |
-|                                                                             |
-|  1. Daily Trading Calendar Base Index (NYSE / CME Grain Trading Days)       |
-|  2. Lag Rule: If T_release > 1:20 PM CT on day t  -->  Available day t+1    |
-|  3. State Preservation: Last Observation Carried Forward (LOCF)             |
-|  4. Shock & Decay Encoding: ΔX_t = X_t - X_{t-prior},  τ_t = t - t_release  |
-+--------------------------------------┬--------------------------------------+
-                                       ▼
-+-----------------------------------------------------------------------------+
-|                       UNIFIED MULTI-MODAL DAILY TENSOR                      |
-|                                                                             |
-|  - Continuous Market Features: X_market[t] in R^d_m                         |
-|  - Exogenous Macro Signals:    X_macro[t]  in R^d_e                         |
-|  - Tabular USDA Signals:       X_usda[t]   in R^d_u                         |
-|  - Weather Embeddings:         X_weath[t]  in R^d_w                         |
-|  - Unstructured Embeddings:    X_text[t]   in R^d_txt                       |
-+-----------------------------------------------------------------------------+
+```mermaid
+flowchart TD
+    subgraph Raw["Raw Ingestion Feeds"]
+        Mkt["Daily Market (CBOT: ZC, ZS, ZW)<br/>Close: 1:20 PM CT"]
+        Mac["Macro & Energy (FRED: WTI, DXY)<br/>Close: 4:00 PM ET"]
+        CP["USDA Crop Progress<br/>Mon 3:00 PM CT (Post-Close)"]
+        WASDE["USDA WASDE Balance Sheets<br/>Monthly ~12:00 PM ET"]
+        Wth["Weather Observables<br/>Daily Midwest Grids"]
+        Txt["Text & News Feeds<br/>Asynchronous Streams"]
+    end
+
+    subgraph PIT["Point-in-Time Alignment Engine"]
+        Cal["CME Grain Trading Day Grid (Base Index)"]
+        Lag{"Release > 1:20 PM CT?"}
+        LOCF["Forward-Fill (LOCF) + Shock (ΔX) + Decay (τ)"]
+    end
+
+    Raw --> Cal
+    Cal --> Lag
+    Lag -- Yes --> AvailNext["Available Date: Day t + 1"]
+    Lag -- No --> AvailSame["Available Date: Day t"]
+    AvailNext --> LOCF
+    AvailSame --> LOCF
+
+    subgraph Tensor["Unified Daily Input Tensor"]
+        Out["[X_market, X_macro, X_usda, X_weather, X_text]"]
+    end
+
+    LOCF --> Tensor
 ```
 
 ### 3.1 Data Source Registry & Ingestion Protocols
@@ -159,7 +161,7 @@ To ensure no future information leaks into historical simulation rows, all inges
 
 ### 3.3 Asynchronous Merging: Shock and Information Decay Formulation
 
-Forward-filling sparse weekly/monthly data directly creates stale feature artifacts. To convey both the updated level and its receding information freshness to transformer attention mechanisms, the alignment pipeline computes two auxiliary variables for every lower-frequency stream:
+Forward-filling sparse weekly/monthly data directly creates stale feature artifacts. To convey both the updated level and its receding information freshness to transformer attention mechanisms, the alignment pipeline computes three auxiliary variables for every lower-frequency stream:
 
 1. **Information Surprise / Delta ($\Delta S_t$):**
    $$\Delta S_t = S_{\tau} - S_{\tau - 1} \quad \forall t \in [\tau_k, \tau_{k+1})$$
@@ -167,6 +169,9 @@ Forward-filling sparse weekly/monthly data directly creates stale feature artifa
 2. **Elapsed Freshness Counter ($\Delta \tau_t$):**
    $$\Delta \tau_t = t - \tau_k \quad \text{for } t \ge \tau_k$$
    An integer counter tracking trading days elapsed since the latest release. Provides positional decay context to temporal attention layers.
+3. **Binary Update Mask ($m_t$):**
+   $$m_t = \begin{cases} 1 & \text{if record } t \text{ was newly published} \\ 0 & \text{if forward-filled / missing} \end{cases}$$
+   Allows Variable Selection Networks to dynamically distinguish fresh information shocks from stale fills.
 
 ### 3.4 Geospatial Weather Staged Architecture
 
@@ -349,4 +354,96 @@ To incorporate unstructured news and gridded weather rasters into the TFT backbo
 
 ## 6. Validation & Backtesting Strategy
 
-_Document cross-validation splits, leakage prevention (purging/embargoing), and simulation mechanics._
+Financial time series exhibit non-stationarity, autoregressive memory, and overlapping multi-horizon labels. Standard random cross-validation generates severe lookahead leakage. This framework enforces strict temporal purging, embargoing, and realistic market friction modeling.
+
+---
+
+### 6.1 Leakage Prevention: Purging & Dynamic Embargoing
+
+Because target forward log returns span $h \in \{1, 5, 20\}$ trading days, adjacent samples share up to 19 days of overlapping price history.
+
+#### 1. Purging Mechanics
+For any validation fold spanning $[T_{v, \text{start}}, T_{v, \text{end}}]$, any training sample at timestamp $t$ whose forward evaluation window $[t, t+h]$ intersects $T_{v, \text{start}}$ is removed from the training split:
+$$\text{Purge Condition: } t + h \ge T_{v, \text{start}} \quad \text{for } t < T_{v, \text{start}}$$
+
+#### 2. Dynamic Embargo Windows
+Serial correlation in volatility and trading volume lingers across fold transitions. When training on data chronologically following a validation fold, an embargo window of length $h_{\text{embargo}} = 20$ trading days is inserted:
+$$\text{Embargo Window: } t \in [T_{v, \text{end}}, T_{v, \text{end}} + 20]$$
+Samples falling inside the embargo window are completely omitted from subsequent training passes.
+
+#### 3. Walk-Forward Expanding Cross-Validation
+Rather than static splits, we evaluate across expanding walk-forward folds:
+- **Fold 1:** Train: 2012–2018 | Val: 2019 (Purged/Embargoed)
+- **Fold 2:** Train: 2012–2019 | Val: 2020 (COVID / Commodity rally)
+- **Fold 3:** Train: 2012–2020 | Val: 2021 (Global supply shock)
+- **Fold 4:** Train: 2012–2021 | Val: 2022 (Russia-Ukraine conflict)
+- **Fold 5:** Train: 2012–2022 | Val: 2023–2024 (Regime stabilization)
+- **Final Holdout Test:** 2025–2026 (Completely unseen out-of-sample test)
+
+---
+
+### 6.2 Backtest Execution Mechanics & Market Frictions
+
+Downstream trading strategy simulations translate quantile return forecasts into long/short/flat sizing rules while modeling institutional execution frictions.
+
+#### 1. Position Sizing via Asymmetric Quantile Skew
+Positions are scaled using the predicted upside-to-downside risk ratio:
+$$\text{Signal}_t = \frac{\hat{r}_{t, h}^{(0.90)} - \hat{r}_{t, h}^{(0.50)}}{\hat{r}_{t, h}^{(0.50)} - \hat{r}_{t, h}^{(0.10)}}$$
+A signal $> 1.0$ indicates positive return skew (upside tail exceeds downside risk).
+
+#### 2. Market Friction Modeling
+- **Slippage:** 1 tick per transaction ($0.25\text{ cents/bushel} = \$12.50\text{ per 5,000 bu contract}$).
+- **WASDE Event Slippage Penalty:** Slippage is quadrupled to 4 ticks on days containing USDA WASDE releases to reflect liquidity withdrawal.
+- **Clearing & Exchange Commissions:** Flat $\$3.50$ per contract round-turn.
+- **Financing & Margin:** $8\%$ initial performance bond margin with cash carry modeled via overnight SOFR / 3-month Treasury yields.
+
+---
+
+### 6.3 Train, Validation & Holdout Split Protocol
+
+To evaluate real-world generalization across distinct market regimes while guaranteeing zero lookahead contamination, data is strictly partitioned into three chronological windows.
+
+#### 1. Split Allocation Windows
+- **Training Partition (`2012-01-01` to `2021-12-31`):**
+  - ~2,500 trading days.
+  - Used exclusively for model parameter optimization, tree building, and representation learning.
+  - Spans key regimes: 2012 historic US drought, 2014–2019 low-volatility supply surplus, 2020 pandemic recovery.
+- **Validation Partition (`2022-01-01` to `2023-12-31`):**
+  - ~500 trading days.
+  - Used exclusively for hyperparameter tuning, learning rate scheduling, and early stopping.
+  - Captures high-volatility structural supply shocks (e.g., Russia-Ukraine conflict and Black Sea grain corridor disruptions).
+- **Leakage Embargo Window (`2024-01-01` to `2024-01-31`):**
+  - 20 trading days completely omitted from all splits to prevent overlap of 20-day forward return labels ($r_{t, 20}$).
+- **Out-of-Sample Test Partition (`2024-02-01` to `2026-08-31`):**
+  - ~650 trading days.
+  - Frozen out-of-sample evaluation split. Never exposed to feature scaling, hyperparameter search, or checkpoint selection.
+
+#### 2. Feature Scaler Fitting Contract
+- All preprocessing transformations (e.g., `RobustScaler`, quantile normalizers, missing value imputers) are fit **exclusively on the Training Partition**:
+  $$\mu_{\text{train}}, \sigma_{\text{train}} = \text{Fit}(X_{\text{train}})$$
+- Validation and Test partitions are transformed strictly using training statistics without parameter updates:
+  $$X_{\text{val, scaled}} = \frac{X_{\text{val}} - \mu_{\text{train}}}{\sigma_{\text{train}}}, \quad X_{\text{test, scaled}} = \frac{X_{\text{test}} - \mu_{\text{train}}}{\sigma_{\text{train}}}$$
+
+---
+
+### 6.4 CME Exchange Price Limit & Execution Constraints
+- **Limit Up / Limit Down Handling:** CBOT daily price fluctuation limits restrict trade execution. If the high/low touches the expanded daily exchange limit, execution is locked out:
+  $$\text{Execution Condition: } |P_t^{\text{high/low}} - P_{t-1}^{\text{close}}| < \text{Limit}_{\text{CME}}$$
+  Orders placed during locked limit sessions queue without fill until boundaries expand or trading normalizes.
+
+---
+
+### 6.5 Evaluation Metrics Hierarchy
+
+#### 1. Model & Probabilistic Scoring
+- **Quantile Pinball Loss ($\mathcal{L}_q$):** Multi-horizon evaluation across $q \in \{0.10, 0.50, 0.90\}$.
+- **Continuous Ranked Probability Score (CRPS):**
+  $$\text{CRPS}(F, y) = \int_{-\infty}^\infty \left( F(x) - \mathbf{1}_{\{x \ge y\}} \right)^2 dx$$
+- **Empirical Quantile Coverage:** Verifies that the $90\%$ quantile envelope captures approximately $90\%$ of realized price distributions.
+
+#### 2. Portfolio Strategy Performance
+- **Annualized Sharpe Ratio:** $\text{SR} = \frac{\mathbb{E}[R_p - R_f]}{\sigma_p} \sqrt{252}$
+- **Sortino Ratio:** Downside deviation risk metric penalizing strictly negative return variance.
+- **Maximum Drawdown (MDD):**
+  $$\text{MDD} = \max_{\tau \in [0, t]} \left(\frac{\max_{s \in [0, \tau]} W_s - W_\tau}{\max_{s \in [0, \tau]} W_s}\right)$$
+- **Calmar Ratio:** $\text{Calmar} = \frac{\text{Annualized CAGR}}{|\text{MDD}|}$
